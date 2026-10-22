@@ -209,7 +209,7 @@ function showMobilePage(page,scroll=true){
  if(scroll)window.scrollTo({top:0,behavior:'smooth'});
 }
 $('mobileMap').onclick=()=>showMobilePage('map');
-$('mobileNotes').onclick=()=>showMobilePage('notes');
+$('mobileNotes').onclick=()=>showTimeline();
 $('mobileAdd').onclick=beginNewRecord;
 
 updateStats();showMemo();loadMap();
