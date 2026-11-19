@@ -4,5 +4,5 @@
 window.TRAVEL_CONFIG = {
   url: 'https://dzowhjthxojktyujmlgr.supabase.co',
   publishableKey: 'sb_publishable_ZHLnsMWF19WJB8JXlCJCWw_PAs45bqh',
-  bucket: 'travel-photos'
+  bucket: 'travel_diary'
 };
