@@ -4,7 +4,7 @@
 const cfg = window.TRAVEL_CONFIG || {};
 const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(cfg.url || '') &&
   !!cfg.publishableKey && !cfg.publishableKey.startsWith('YOUR_');
-const client = configured && window.supabase ? window.supabase.createClient(cfg.url, cfg.publishableKey) : null;
+const client = configured && window.supabase ? window.supabase.createClient(cfg.url, cfg.publishableKey, {auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,flowType:'implicit'}}) : null;
 const bucket = cfg.bucket || 'travel-photos';
 let user = null, busy = 0, reloading = false, pending = false, timer = null, channel = null;
 let photoPaths = new Map(); // signed URL -> private object path; never save signed URLs in SQL
@@ -123,19 +123,60 @@ async function migrateBrowserData(){
  // Deliberately preserve the old browser-only data for recovery.
 }
 function subscribe(){if(channel)client.removeChannel(channel);channel=client.channel('travel-updates');for(const table of ['trips','trip_photos','region_colors'])channel.on('postgres_changes',{event:'*',schema:'public',table},()=>{if(!busy)scheduleRefresh();else pending=true;});channel.subscribe();}
-async function signin(){
- const email=$('cloudEmail').value.trim();
- const password=$('cloudPassword').value;
- if(!email||!password)return alert('이메일과 비밀번호를 모두 입력해 주세요.');
- const button=$('cloudLogin');button.disabled=true;button.textContent='로그인 중…';
- try {
-  const {error}=await client.auth.signInWithPassword({email,password});
-  if(error) throw error;
-  $('cloudPassword').value='';
- } catch(e) {
-  alert('로그인하지 못했습니다: '+errorMessage(e)+'\nSupabase에 사용자와 비밀번호가 등록되어 있는지 확인해 주세요.');
- } finally {button.disabled=false;button.textContent='비밀번호로 로그인';}
+// Handles admin invitation callbacks as well as legacy token_hash and PKCE email URLs.
+// Never log URLs containing tokens or show those tokens in UI.
+function authLinkInfo(){
+ const q=new URLSearchParams(location.search),h=new URLSearchParams(location.hash.slice(1));
+ return {q,h,hasAuthLink:q.has('code')||q.has('token_hash')||h.has('access_token')||h.has('error')||q.has('error')};
 }
+function safeAuthError(code,description){
+ const c=String(code||'').toLowerCase();
+ if(c.includes('expired')||c.includes('invalid')||c.includes('otp'))return '초대 링크가 만료되었거나 이미 사용되었습니다. Supabase에서 새로운 초대 링크를 발송해 주세요.';
+ return '이메일 링크 인증에 실패했습니다. 링크가 만료되지 않았는지 확인하고 다시 시도해 주세요.';
+}
+function showAuthHint(msg,problem=false){
+ const el=$('cloudHelp'); if(el){el.textContent=msg;el.style.color=problem?'#a44d45':'';}
+ if(problem)status('⚠ 이메일 인증 실패','error');
+}
+async function consumeAuthCallback(){
+ const {q,h,hasAuthLink}=authLinkInfo();
+ if(!hasAuthLink)return {hasAuthLink:false,session:null};
+ const failure=q.get('error')||h.get('error');
+ if(failure){const msg=safeAuthError(q.get('error_code')||h.get('error_code')||failure,q.get('error_description')||h.get('error_description'));showAuthHint(msg,true);return {hasAuthLink:true,session:null,error:true};}
+ showAuthHint('초대 링크를 확인하고 로그인 중입니다…');
+ try{
+  // Supabase JS v2 normally consumes implicit #access_token during getSession().
+  let r=await client.auth.getSession(); if(r.error)throw r.error;
+  if(r.data.session)return {hasAuthLink:true,session:r.data.session};
+  if(q.has('token_hash') && q.has('type')){
+   const v=await client.auth.verifyOtp({token_hash:q.get('token_hash'),type:q.get('type')});
+   if(v.error)throw v.error;
+   history.replaceState(null,'',location.pathname);
+   return {hasAuthLink:true,session:v.data.session};
+  }
+  if(q.has('code')){
+   const v=await client.auth.exchangeCodeForSession(q.get('code'));
+   if(v.error)throw v.error;
+   history.replaceState(null,'',location.pathname);
+   return {hasAuthLink:true,session:v.data.session};
+  }
+  if(h.has('access_token') && h.has('refresh_token')){
+   const v=await client.auth.setSession({access_token:h.get('access_token'),refresh_token:h.get('refresh_token')});
+   if(v.error)throw v.error;
+   history.replaceState(null,'',location.pathname);
+   return {hasAuthLink:true,session:v.data.session};
+  }
+  showAuthHint('초대 링크에서 로그인 정보를 확인할 수 없습니다. 이메일의 초대 링크가 올바른지 확인해 주세요.',true);
+  return {hasAuthLink:true,session:null,error:true};
+ }catch(e){
+  console.warn('Invitation callback failed:',e?.name||'AuthError');
+  showAuthHint(safeAuthError(e?.code,e?.message),true);
+  return {hasAuthLink:true,session:null,error:true};
+ }
+}
+async function signin(){const email=$('cloudEmail').value.trim();if(!email)return alert('이메일을 입력해 주세요.');
+ const r=await client.auth.signInWithOtp({email,options:{shouldCreateUser:false,emailRedirectTo:location.origin+location.pathname}});
+ if(r.error)alert('로그인 링크를 보낼 수 없습니다: '+errorMessage(r.error));else alert('등록된 이메일이라면 로그인 링크가 발송됩니다. 메일을 확인해 주세요.');}
 async function logout(){if(channel){await client.removeChannel(channel);channel=null;}await client.auth.signOut();user=null;db={entries:[],colors:{}};photoPaths.clear();showTimeline();updateStats();updateMapColors();drawPins();status('로그인 필요');screen(true);}
 async function activate(session){if(!session?.user){user=null;screen(true);status('로그인 필요');return;}user=session.user;screen(false);$('cloudAccount').textContent=user.email||'로그인됨';await refresh();subscribe();}
 async function init(){
@@ -144,10 +185,17 @@ async function init(){
  $('browserImport').onclick=()=>migrateBrowserData().catch(e=>alert('기존 브라우저 데이터 이전 실패: '+errorMessage(e))); 
  $('cloudRefresh').onclick=()=>{if(noteDirty())return alert('작성 중인 내용을 저장하거나 편집을 종료한 다음 새로고침하세요.');refresh().catch(e=>alert(errorMessage(e)));};
  if(!client){screen(true);status('Supabase 연결 설정 필요','error');$('cloudHelp').textContent='supabase-config.js에 프로젝트 URL과 publishable key를 입력하세요.';return;}
- $('cloudHelp').textContent='Supabase에 등록된 이메일과 비밀번호로 로그인하세요.';
- $('cloudPassword').addEventListener('keydown',e=>{if(e.key==='Enter')signin();});
- client.auth.onAuthStateChange((_event,session)=>{if(session?.user?.id===user?.id)return;setTimeout(()=>activate(session).catch(e=>{status('⚠ 연결 오류','error');alert(errorMessage(e));}),0);});
- const {data,error}=await client.auth.getSession();if(error){status('⚠ 로그인 상태 확인 실패','error');return;}await activate(data.session);
+ $('cloudHelp').textContent='초대 메일의 링크를 클릭하면 로그인됩니다. 가입된 계정은 로그인 링크를 다시 받을 수도 있습니다.';
+ // Register listener before reading the session; defer async work outside auth callback.
+ client.auth.onAuthStateChange((_event,session)=>{if(session?.user?.id===user?.id)return;setTimeout(()=>activate(session).catch(e=>{status('⚠ 연결 오류','error');showAuthHint('로그인은 확인됐지만 데이터를 불러오지 못했습니다: '+errorMessage(e),true);}),0);});
+ const callback=await consumeAuthCallback();
+ if(callback.session){await activate(callback.session);}
+ else {
+  const {data,error}=await client.auth.getSession();
+  if(error){status('⚠ 로그인 상태 확인 실패','error');showAuthHint('로그인 상태를 확인하지 못했습니다: '+errorMessage(error),true);return;}
+  await activate(data.session);
+  if(!data.session && callback.error)status('⚠ 초대 링크 인증 실패','error');
+ }
  window.addEventListener('focus',()=>{if(user&&!noteDirty())scheduleRefresh();});
  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&user&&!noteDirty())scheduleRefresh();});
 }
