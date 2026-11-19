@@ -123,9 +123,19 @@ async function migrateBrowserData(){
  // Deliberately preserve the old browser-only data for recovery.
 }
 function subscribe(){if(channel)client.removeChannel(channel);channel=client.channel('travel-updates');for(const table of ['trips','trip_photos','region_colors'])channel.on('postgres_changes',{event:'*',schema:'public',table},()=>{if(!busy)scheduleRefresh();else pending=true;});channel.subscribe();}
-async function signin(){const email=$('cloudEmail').value.trim();if(!email)return alert('이메일을 입력해 주세요.');
- const r=await client.auth.signInWithOtp({email,options:{shouldCreateUser:false,emailRedirectTo:location.origin+location.pathname}});
- if(r.error)alert('로그인 링크를 보낼 수 없습니다: '+errorMessage(r.error));else alert('등록된 이메일이라면 로그인 링크가 발송됩니다. 메일을 확인해 주세요.');}
+async function signin(){
+ const email=$('cloudEmail').value.trim();
+ const password=$('cloudPassword').value;
+ if(!email||!password)return alert('이메일과 비밀번호를 모두 입력해 주세요.');
+ const button=$('cloudLogin');button.disabled=true;button.textContent='로그인 중…';
+ try {
+  const {error}=await client.auth.signInWithPassword({email,password});
+  if(error) throw error;
+  $('cloudPassword').value='';
+ } catch(e) {
+  alert('로그인하지 못했습니다: '+errorMessage(e)+'\nSupabase에 사용자와 비밀번호가 등록되어 있는지 확인해 주세요.');
+ } finally {button.disabled=false;button.textContent='비밀번호로 로그인';}
+}
 async function logout(){if(channel){await client.removeChannel(channel);channel=null;}await client.auth.signOut();user=null;db={entries:[],colors:{}};photoPaths.clear();showTimeline();updateStats();updateMapColors();drawPins();status('로그인 필요');screen(true);}
 async function activate(session){if(!session?.user){user=null;screen(true);status('로그인 필요');return;}user=session.user;screen(false);$('cloudAccount').textContent=user.email||'로그인됨';await refresh();subscribe();}
 async function init(){
@@ -134,7 +144,8 @@ async function init(){
  $('browserImport').onclick=()=>migrateBrowserData().catch(e=>alert('기존 브라우저 데이터 이전 실패: '+errorMessage(e))); 
  $('cloudRefresh').onclick=()=>{if(noteDirty())return alert('작성 중인 내용을 저장하거나 편집을 종료한 다음 새로고침하세요.');refresh().catch(e=>alert(errorMessage(e)));};
  if(!client){screen(true);status('Supabase 연결 설정 필요','error');$('cloudHelp').textContent='supabase-config.js에 프로젝트 URL과 publishable key를 입력하세요.';return;}
- $('cloudHelp').textContent='Supabase에서 미리 등록한 본인 이메일로만 로그인할 수 있습니다.';
+ $('cloudHelp').textContent='Supabase에 등록된 이메일과 비밀번호로 로그인하세요.';
+ $('cloudPassword').addEventListener('keydown',e=>{if(e.key==='Enter')signin();});
  client.auth.onAuthStateChange((_event,session)=>{if(session?.user?.id===user?.id)return;setTimeout(()=>activate(session).catch(e=>{status('⚠ 연결 오류','error');alert(errorMessage(e));}),0);});
  const {data,error}=await client.auth.getSession();if(error){status('⚠ 로그인 상태 확인 실패','error');return;}await activate(data.session);
  window.addEventListener('focus',()=>{if(user&&!noteDirty())scheduleRefresh();});
