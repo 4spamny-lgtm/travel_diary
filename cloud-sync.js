@@ -174,6 +174,33 @@ async function consumeAuthCallback(){
   return {hasAuthLink:true,session:null,error:true};
  }
 }
+async function signInWithPassword(){
+ const email=$('cloudEmail').value.trim(),password=$('cloudPassword').value;
+ if(!email||!password)return showAuthHint('이메일과 비밀번호를 입력해 주세요.',true);
+ const button=$('cloudPasswordLogin');button.disabled=true;
+ try{
+  const {error}=await client.auth.signInWithPassword({email,password});
+  if(error)throw error;
+  showAuthHint('로그인 성공! 여행 기록을 불러오고 있습니다…');
+ }catch(e){showAuthHint('비밀번호 로그인 실패: '+errorMessage(e),true);}
+ finally{button.disabled=false;}
+}
+async function setAccountPassword(){
+ if(!client||!user)return alert('먼저 해당 계정으로 로그인해 주세요.');
+ const password=$('newCloudPassword').value,confirmPassword=$('confirmCloudPassword').value;
+ const help=$('cloudPasswordHelp'),button=$('cloudSetPassword');
+ if(password.length<8){help.textContent='비밀번호는 8자 이상으로 설정해 주세요.';return;}
+ if(password!==confirmPassword){help.textContent='입력한 비밀번호가 일치하지 않습니다.';return;}
+ button.disabled=true;help.textContent='비밀번호를 저장하는 중…';
+ try{
+  const {error}=await client.auth.updateUser({password});
+  if(error)throw error;
+  $('newCloudPassword').value='';$('confirmCloudPassword').value='';
+  help.textContent='✓ 비밀번호를 설정했습니다. 다른 기기에서는 이메일과 비밀번호로 로그인하세요.';
+ }catch(e){
+  help.textContent='비밀번호 설정 실패: '+errorMessage(e)+' (재인증을 요구할 경우 이메일 링크로 다시 로그인한 뒤 시도하세요.)';
+ }finally{button.disabled=false;}
+}
 async function signin(){const email=$('cloudEmail').value.trim();if(!email)return alert('이메일을 입력해 주세요.');
  const r=await client.auth.signInWithOtp({email,options:{shouldCreateUser:false,emailRedirectTo:location.origin+location.pathname}});
  if(r.error)alert('로그인 링크를 보낼 수 없습니다: '+errorMessage(r.error));else alert('등록된 이메일이라면 로그인 링크가 발송됩니다. 메일을 확인해 주세요.');}
@@ -181,11 +208,14 @@ async function logout(){if(channel){await client.removeChannel(channel);channel=
 async function activate(session){if(!session?.user){user=null;screen(true);status('로그인 필요');return;}user=session.user;screen(false);$('cloudAccount').textContent=user.email||'로그인됨';await refresh();subscribe();}
 async function init(){
  $('cloudLogin').onclick=()=>{if(!client)return alert('먼저 supabase-config.js에 프로젝트 URL과 공개용 키를 입력하세요.');signin();};
+ $('cloudPasswordLogin').onclick=()=>{if(!client)return alert('Supabase 연결 설정을 확인해 주세요.');signInWithPassword();};
+ $('cloudPassword').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();if(client)signInWithPassword();}});
+ $('cloudSetPassword').onclick=setAccountPassword;
  $('cloudLogout').onclick=logout;
  $('browserImport').onclick=()=>migrateBrowserData().catch(e=>alert('기존 브라우저 데이터 이전 실패: '+errorMessage(e))); 
  $('cloudRefresh').onclick=()=>{if(noteDirty())return alert('작성 중인 내용을 저장하거나 편집을 종료한 다음 새로고침하세요.');refresh().catch(e=>alert(errorMessage(e)));};
  if(!client){screen(true);status('Supabase 연결 설정 필요','error');$('cloudHelp').textContent='supabase-config.js에 프로젝트 URL과 publishable key를 입력하세요.';return;}
- $('cloudHelp').textContent='초대 메일의 링크를 클릭하면 로그인됩니다. 가입된 계정은 로그인 링크를 다시 받을 수도 있습니다.';
+ $('cloudHelp').textContent='기존 계정은 이메일과 비밀번호로 로그인할 수 있습니다. 비밀번호가 없으면 이메일 링크를 이용하세요.';
  // Register listener before reading the session; defer async work outside auth callback.
  client.auth.onAuthStateChange((_event,session)=>{if(session?.user?.id===user?.id)return;setTimeout(()=>activate(session).catch(e=>{status('⚠ 연결 오류','error');showAuthHint('로그인은 확인됐지만 데이터를 불러오지 못했습니다: '+errorMessage(e),true);}),0);});
  const callback=await consumeAuthCallback();
